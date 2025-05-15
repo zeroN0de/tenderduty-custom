@@ -84,106 +84,125 @@ func Run(configFile, stateFile, chainConfigDirectory string, password *string) e
 		}()
 	}
 
-	pivot := ChainConfig{
-		ChainId: td.Chains["B-Harvest"].ChainId,
-		Nodes:  make([]*NodeConfig, len(td.Chains["B-Harvest"].Nodes)),
-	}
-	for i, n := range td.Chains["B-Harvest"].Nodes {
-		nc := NodeConfig{
-			Url: n.Url,
-			AlertIfDown: n.AlertIfDown,
-		}
+    pivot := ChainConfig{
+        ChainId: td.Chains["B-Harvest"].ChainId,
+        Nodes:   make([]*NodeConfig, len(td.Chains["B-Harvest"].Nodes)),
+    }
+    for i, n := range td.Chains["B-Harvest"].Nodes {
+        pivot.Nodes[i] = &NodeConfig{
+            Url:         n.Url,
+            AlertIfDown: n.AlertIfDown,
+        }
+    }
 
-		pivot.Nodes[i] = &nc
-	}
+    // RPC 클라이언트 초기화
+    if err := pivot.newRpc(); err != nil {
+        return err
+    }
 
-	err = pivot.newRpc()
-	if err != nil {
-		return err
-	}
+    // ─────────── 여기부터 수정: 전체 Validator 셋 페이지네이션으로 가져오기 ───────────
 
-	q := staking.QueryValidatorsRequest{
-		Status: staking.BondStatusBonded,
-		Pagination: &query.PageRequest{
-			Limit: 500,
-		},
-	}
-	b, err := q.Marshal()
-	if err != nil {
-		return err
-	}
-	resp, err := pivot.client.ABCIQuery(td.ctx, "/cosmos.staking.v1beta1.Query/Validators", b)
-	if err != nil {
-		return err
-	}
-	if resp.Response.Value == nil {
-		return errors.New("could not find validators")
-	}
-	vals := &staking.QueryValidatorsResponse{}
-	err = vals.Unmarshal(resp.Response.Value)
-	if err != nil {
-		return err
-	}
+    pageReq := &query.PageRequest{Key: nil, Limit: 500}
+    var allVals []staking.Validator
 
-	cnt := 0
-	for _, val := range vals.Validators {
-		nodes := make([]*NodeConfig, 1)
-		nodes[0] = &NodeConfig{
-			Url: pivot.Nodes[cnt%len(pivot.Nodes)].Url,
-			AlertIfDown: pivot.Nodes[cnt%len(pivot.Nodes)].AlertIfDown,
-		}
-		c := &ChainConfig{
-			name:            val.GetMoniker(),
-			blocksResults:   make([]int, showBLocks),
-			ChainId:         pivot.ChainId,
-			ValAddress:      val.OperatorAddress,
-			ValconsOverride: pivot.ValconsOverride,
-			ExtraInfo:       pivot.ExtraInfo,
-			Alerts:          pivot.Alerts,
-			PublicFallback:  pivot.PublicFallback,
-			// Nodes:           []*NodeConfig{pivot.Nodes[cnt%len(pivot.Nodes)]},
-			Nodes: nodes,
-		}
-		for i := 0; i < showBLocks; i++ {
-			c.blocksResults[i] = 3
-		}
-		td.Chains[val.GetMoniker()] = c
+    for {
+        // 1) 페이징 요청 생성
+        req := &staking.QueryValidatorsRequest{
+            Status:     staking.BondStatusBonded,
+            Pagination: pageReq,
+        }
+        bz, err := req.Marshal()
+        if err != nil {
+            return err
+        }
 
-		cnt++
-	}
+        // 2) ABCIQuery로 Validators 호출 (경로: "/cosmos.staking.v1beta1.Query/Validators")
+        resp, err := pivot.client.ABCIQuery(td.ctx, "/cosmos.staking.v1beta1.Query/Validators", bz)
+        if err != nil {
+            return err
+        }
+        if resp.Response.Value == nil {
+            return errors.New("could not find validators (empty response)")
+        }
 
-	for k := range td.Chains {
-		cc := td.Chains[k]
+        // 3) 응답 언마샬링
+        var pageRes staking.QueryValidatorsResponse
+        if err := pageRes.Unmarshal(resp.Response.Value); err != nil {
+            return err
+        }
 
-		go func(cc *ChainConfig, name string) {
-			// alert worker
-			go cc.watch()
+        // 4) 로그 출력 (페이징별 개수)
+        log.Printf("[Validators] fetched %d validators in this page\n", len(pageRes.Validators))
+        allVals = append(allVals, pageRes.Validators...)
 
-			// node health checks:
-			go func() {
-				for {
-					cc.monitorHealth(td.ctx, name)
-				}
-			}()
+        // 5) 더 가져올 페이지가 없으면 종료
+        if pageRes.Pagination.NextKey == nil || len(pageRes.Pagination.NextKey) == 0 {
+            break
+        }
+        pageReq.Key = pageRes.Pagination.NextKey
+    }
 
-			// websocket subscription and occasional validator info refreshes
-			for {
-				e := cc.newRpc()
-				if e != nil {
-					l(cc.ChainId, e)
-					time.Sleep(5 * time.Second)
-					continue
-				}
-				e = cc.GetValInfo(true)
-				if e != nil {
-					l("🛑", cc.ChainId, e)
-				}
-				cc.WsRun()
-				l(cc.ChainId, "🌀 websocket exited! Restarting monitoring")
-				time.Sleep(5 * time.Second)
-			}
-		}(cc, k)
-	}
+    // 6) 전체 개수 로그
+    log.Printf("[Validators] total bonded validators fetched: %d\n", len(allVals))
+
+    // ─────────── 기존 로직: td.Chains 맵 초기화 ───────────
+
+    cnt := 0
+    for _, val := range allVals {
+        nodes := []*NodeConfig{{
+            Url:         pivot.Nodes[cnt%len(pivot.Nodes)].Url,
+            AlertIfDown: pivot.Nodes[cnt%len(pivot.Nodes)].AlertIfDown,
+        }}
+        c := &ChainConfig{
+            name:            val.GetMoniker(),
+            blocksResults:   make([]int, showBLocks),
+            ChainId:         pivot.ChainId,
+            ValAddress:      val.OperatorAddress,
+            ValconsOverride: pivot.ValconsOverride,
+            ExtraInfo:       pivot.ExtraInfo,
+            Alerts:          pivot.Alerts,
+            PublicFallback:  pivot.PublicFallback,
+            Nodes:           nodes,
+        }
+        for i := range c.blocksResults {
+            c.blocksResults[i] = 3
+        }
+        td.Chains[val.GetMoniker()] = c
+        cnt++
+    }
+
+    // ─────────── 나머지 로직 (모니터링 루프, 상태 저장 등) ───────────
+
+    for k := range td.Chains {
+        cc := td.Chains[k]
+
+        go func(cc *ChainConfig, name string) {
+            // alert worker
+            go cc.watch()
+
+            // node health checks:
+            go func() {
+                for {
+                    cc.monitorHealth(td.ctx, name)
+                }
+            }()
+
+            // websocket subscription and periodic validator info 갱신
+            for {
+                if err := cc.newRpc(); err != nil {
+                    l(cc.ChainId, err)
+                    time.Sleep(5 * time.Second)
+                    continue
+                }
+                if err := cc.GetValInfo(true); err != nil {
+                    l("🛑", cc.ChainId, err)
+                }
+                cc.WsRun()
+                l(cc.ChainId, "🌀 websocket exited! Restarting monitoring")
+                time.Sleep(5 * time.Second)
+            }
+        }(cc, k)
+    }
 
 	// attempt to save state on exit, only a best-effort ...
 	saved := make(chan interface{})
