@@ -12,7 +12,8 @@ import (
 
 	dash "github.com/blockpane/tenderduty/v2/td2/dashboard"
 	"github.com/cosmos/cosmos-sdk/types/query"
-	mstaking "github.com/initia-labs/initia/x/mstaking/types"
+	staking "github.com/cosmos/cosmos-sdk/x/staking/types"
+
 )
 
 var td = &Config{}
@@ -101,8 +102,8 @@ func Run(configFile, stateFile, chainConfigDirectory string, password *string) e
 		return err
 	}
 
-	q := mstaking.QueryValidatorsRequest{
-		Status: mstaking.BondStatusBonded,
+	q := staking.QueryValidatorsRequest{
+		Status: staking.BondStatusBonded,
 		Pagination: &query.PageRequest{
 			Limit: 500,
 		},
@@ -111,14 +112,14 @@ func Run(configFile, stateFile, chainConfigDirectory string, password *string) e
 	if err != nil {
 		return err
 	}
-	resp, err := pivot.client.ABCIQuery(td.ctx, "/initia.mstaking.v1.Query/Validators", b)
+	resp, err := pivot.client.ABCIQuery(td.ctx, "/cosmos.staking.v1beta1.Query/Validators", b)
 	if err != nil {
 		return err
 	}
 	if resp.Response.Value == nil {
 		return errors.New("could not find validators")
 	}
-	vals := &mstaking.QueryValidatorsResponse{}
+	vals := &staking.QueryValidatorsResponse{}
 	err = vals.Unmarshal(resp.Response.Value)
 	if err != nil {
 		return err
