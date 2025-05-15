@@ -12,7 +12,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	"github.com/cosmos/cosmos-sdk/types/bech32"
 	slashing "github.com/cosmos/cosmos-sdk/x/slashing/types"
-	mstaking "github.com/initia-labs/initia/x/mstaking/types"
+	staking "github.com/cosmos/cosmos-sdk/x/staking/types"
 	rpchttp "github.com/tendermint/tendermint/rpc/client/http"
 )
 
@@ -151,21 +151,21 @@ func getVal(ctx context.Context, client *rpchttp.HTTP, valoper string) (pub []by
 		return ToBytes(hexAddress), valoper, false, true, nil
 	}
 
-	q := mstaking.QueryValidatorRequest{
+	q := staking.QueryValidatorRequest{
 		ValidatorAddr: valoper,
 	}
 	b, err := q.Marshal()
 	if err != nil {
 		return
 	}
-	resp, err := client.ABCIQuery(ctx, "/initia.mstaking.v1.Query/Validator", b)
+	resp, err := client.ABCIQuery(ctx, "/cosmos.staking.v1beta1.Query/Validator", b)
 	if err != nil {
 		return
 	}
 	if resp.Response.Value == nil {
 		return nil, "", false, false, errors.New("could not find validator " + valoper)
 	}
-	val := &mstaking.QueryValidatorResponse{}
+	val := &staking.QueryValidatorResponse{}
 	err = val.Unmarshal(resp.Response.Value)
 	if err != nil {
 		return
