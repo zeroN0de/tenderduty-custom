@@ -33,35 +33,58 @@ func Run(configFile, stateFile, chainConfigDirectory string, password *string) e
 	}
 	log.Println("tenderduty config is valid, starting tenderduty with", len(td.Chains), "chains")
 
-	defer td.cancel()
+	// defer td.cancel()
+	defer func () {
+		td.cancel()
+		close(td.alertChan)
+	}()
 
+
+	// go func() {
+	// 	for {
+	// 		select {
+	// 		case alert := <-td.alertChan:
+	// 			go func(msg *alertMsg) {
+	// 				var e error
+	// 				e = notifyPagerduty(msg)
+	// 				if e != nil {
+	// 					l(msg.chain, "error sending alert to pagerduty", e.Error())
+	// 				}
+	// 				e = notifyDiscord(msg)
+	// 				if e != nil {
+	// 					l(msg.chain, "error sending alert to discord", e.Error())
+	// 				}
+	// 				e = notifyTg(msg)
+	// 				if e != nil {
+	// 					l(msg.chain, "error sending alert to telegram", e.Error())
+	// 				}
+	// 				e = notifySlack(msg)
+	// 				if e != nil {
+	// 					l(msg.chain, "error sending alert to slack", e.Error())
+	// 				}
+	// 			}(alert)
+	// 		case <-td.ctx.Done():
+	// 			return
+	// 		}
+	// 	}
+	// }()
+
+	// 단일 워커로 동기 처리: goroutine 폭증 방지
 	go func() {
-		for {
-			select {
-			case alert := <-td.alertChan:
-				go func(msg *alertMsg) {
-					var e error
-					e = notifyPagerduty(msg)
-					if e != nil {
-						l(msg.chain, "error sending alert to pagerduty", e.Error())
-					}
-					e = notifyDiscord(msg)
-					if e != nil {
-						l(msg.chain, "error sending alert to discord", e.Error())
-					}
-					e = notifyTg(msg)
-					if e != nil {
-						l(msg.chain, "error sending alert to telegram", e.Error())
-					}
-					e = notifySlack(msg)
-					if e != nil {
-						l(msg.chain, "error sending alert to slack", e.Error())
-					}
-				}(alert)
-			case <-td.ctx.Done():
-				return
-			}
-		}
+	    for msg := range td.alertChan {
+	        if e := notifyPagerduty(msg); e != nil {
+	            l(msg.chain, "error sending alert to pagerduty", e.Error())
+	        }
+	        if e := notifyDiscord(msg); e != nil {
+	            l(msg.chain, "error sending alert to discord", e.Error())
+	        }
+	        if e := notifyTg(msg); e != nil {
+	            l(msg.chain, "error sending alert to telegram", e.Error())
+	        }
+	        if e := notifySlack(msg); e != nil {
+	            l(msg.chain, "error sending alert to slack", e.Error())
+	        }
+	    }
 	}()
 
 	if td.EnableDash {
